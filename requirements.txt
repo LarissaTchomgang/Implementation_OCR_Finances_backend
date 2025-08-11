@@ -5,3 +5,4 @@ pytesseract
 Pillow
 pdf2image
 openpyxl
+xlsxwriter
