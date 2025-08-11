@@ -1,21 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes.extraction import router as extraction_router
-from fastapi.staticfiles import StaticFiles
-
+from app.routes import extraction  # <-- importe tes routes
 
 app = FastAPI()
 
-# Middleware CORS (utile pour le frontend)
+# --- Configuration CORS ---
+origins = [
+    "http://localhost:3000",  # pour les tests en local
+    "https://implementation-ocr-finances-frontend-1h038er53.vercel.app",  # ton site Vercel
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,        # uniquement ces domaines
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],          # autorise toutes les méthodes (POST, GET, etc.)
+    allow_headers=["*"],          # autorise tous les headers
 )
 
-app.mount("/exports", StaticFiles(directory="exports"), name="exports")
-# Inclusion des routes
-app.include_router(extraction_router, prefix="/api")
-
+# --- Inclusion des routes ---
+app.include_router(extraction.router, prefix="/api")
