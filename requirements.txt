@@ -5,3 +5,7 @@ pytesseract
 Pillow
 pdf2image
 openpyxl
+<<<<<<< HEAD
+=======
+xlsxwriter
+>>>>>>> 9e5581bddda0018fe98f0e191cba1c1988548eab
