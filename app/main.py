@@ -15,7 +15,7 @@ app.add_middleware(
     allow_origins=origins,        # uniquement ces domaines
     allow_credentials=True,
     allow_methods=["*"],          # autorise toutes les méthodes (POST, GET, etc.)
-    allow_headers=["*"],          # autorise tous les headers
+    allow_headers=["*"],          # autorise tous les headers 
 )
 
 # --- Inclusion des routes ---

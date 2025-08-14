@@ -1,0 +1,13 @@
+train: C:\Users\Moi\Desktop\doc polytech\doc niveau 4 - AIA 4\Stage_Saphir\projet_comptabilité\implémentation_ocr_finance\backend\modele_yolo\dataset\train
+val: C:\Users\Moi\Desktop\doc polytech\doc niveau 4 - AIA 4\Stage_Saphir\projet_comptabilité\implémentation_ocr_finance\backend\modele_yolo\dataset\valid
+test: C:\Users\Moi\Desktop\doc polytech\doc niveau 4 - AIA 4\Stage_Saphir\projet_comptabilité\implémentation_ocr_finance\backend\modele_yolo\dataset\test
+
+nc: 5
+names: ['lignes_transactions', 'nom_banque', 'numero_compte', 'periode', 'titulaire'] 
+
+roboflow:
+  workspace: larissa-yy3vo
+  project: my-first-project-crnn1
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/larissa-yy3vo/my-first-project-crnn1/dataset/2

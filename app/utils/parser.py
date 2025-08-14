@@ -1,72 +1,153 @@
 import re
+from rapidfuzz import fuzz
+
+# Liste élargie de mots-clés et noms possibles
+BANK_KEYWORDS = [
+    "bank", "banque", "banco", "banca",
+    "bnp", "société générale", "sg", "barclays", "hsbc", "lcl", "credit agricole"
+]
+
+ACCOUNT_KEYWORDS = ["account", "compte", "numéro de compte", "acc no", "iban"]
+
+TITLE_KEYWORDS = ["mr", "ms", "mme", "madame", "monsieur"]
+
+DATE_REGEX = r"\d{2}/\d{2}/\d{4}"
+
+# -----------------------
+# Extraction principale
+# -----------------------
 
 def extract_bank_statement_data(ocr_text):
-    lines = ocr_text.split('\n')
+    lines = [l.strip() for l in ocr_text.split('\n') if l.strip()]
     data = {
-        "banque": None,
-        "compte": None,
-        "titulaire": None,
-        "periode": None,
-        "transactions": []
+        "banque": detect_bank(lines),
+        "compte": detect_account(lines),
+        "titulaire": detect_title_holder(lines),
+        "periode": detect_period(lines),
+        "transactions": detect_transactions(lines)
     }
-
-    # 1. Recherche Banque
-    for line in lines:
-        if "bank" in line.lower():
-            data["banque"] = line.strip()
-            break
-
-    # 2. Compte
-    for line in lines:
-        if "account" in line.lower() or "compte" in line.lower():
-            account_numbers = re.findall(r"\d{6,}", line)
-            if account_numbers:
-                data["compte"] = account_numbers[0]
-                break
-
-    # 3. Titulaire
-    for line in lines:
-        if "mr" in line.lower() or "ms" in line.lower():
-            data["titulaire"] = line.strip()
-            break
-
-    # 4. Période
-    for line in lines:
-        if re.search(r"\d{2}/\d{2}/\d{4}", line):
-            dates = re.findall(r"\d{2}/\d{2}/\d{4}", line)
-            if len(dates) >= 2:
-                data["periode"] = f"{dates[0]} - {dates[1]}"
-                break
-
-    # 5. Transactions (meilleure version avec lignes OCR)
-    transaction_lines = lines[90:111]  # Ajuste si besoin
-    data["transactions"] = extract_transactions_from_lines(lines)
-
     return data
 
+# -----------------------
+# Détections simples mais flexibles
+# -----------------------
 
-
-def extract_transactions_from_lines(lines):
-    transactions = []
+def detect_bank(lines):
     for line in lines:
-        if re.search(r"\d{2}/\d{2}/\d{4}", line) and re.search(r"\d+\.\d{2}", line):
-            date_match = re.search(r"\d{2}/\d{2}/\d{4}", line)
-            date = date_match.group()
+        for kw in BANK_KEYWORDS:
+            if fuzz.partial_ratio(kw.lower(), line.lower()) > 80:
+                return line
+    return None
 
-            # Récupère tous les montants
-            amounts = re.findall(r"\d+\.\d{2}", line)
-            if len(amounts) >= 1:
-                montant = amounts[0]  # On prend le premier montant
-                description = line.replace(date, "").replace(montant, "").strip()
-                sens = "Cr" if "credit" in line.lower() or "payment" in line.lower() else "Dr"
+def detect_account(lines):
+    for line in lines:
+        for kw in ACCOUNT_KEYWORDS:
+            if fuzz.partial_ratio(kw.lower(), line.lower()) > 80:
+                account_numbers = re.findall(r"\d{6,}", line.replace(" ", ""))
+                if account_numbers:
+                    return account_numbers[0]
+    return None
 
-                transactions.append({
-                    "date": date,
-                    "description": description,
-                    "montant": montant,
-                    "sens": sens
-                })
+def detect_title_holder(lines):
+    for line in lines:
+        for kw in TITLE_KEYWORDS:
+            if fuzz.partial_ratio(kw.lower(), line.lower()) > 80:
+                return line
+    return None
 
-                
+def detect_period(lines):
+    dates = []
+    for line in lines:
+        matches = re.findall(DATE_REGEX, line)
+        if matches:
+            dates.extend(matches)
+    if len(dates) >= 2:
+        return f"{dates[0]} - {dates[1]}"
+    return None
+
+# -----------------------
+# Détection dynamique des transactions
+# -----------------------
+
+# Formats multiples de date
+DATE_PATTERNS = [
+    r"\d{2}/\d{2}/\d{4}",   # 03/02/2021
+    r"\d{2}/\d{2}",         # 03/02
+    r"\d{1,2} \w{3} \d{2,4}" # 14 Feb 13
+]
+DATE_REGEX_COMBINED = "(" + "|".join(DATE_PATTERNS) + ")"
+
+# Montant : accepte , ou . comme séparateur
+AMOUNT_REGEX = r"\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})"
+
+def detect_transactions(lines):
+    transactions = []
+    buffer_line = ""
+
+    for line in lines:
+        # Fusionner avec ligne précédente si pas de date détectée
+        if not re.search(DATE_REGEX_COMBINED, line) and buffer_line:
+            buffer_line += " " + line
+        else:
+            if buffer_line:
+                tx = parse_transaction_line(buffer_line)
+                if tx:
+                    transactions.append(tx)
+            buffer_line = line
+
+    # Dernière transaction
+    if buffer_line:
+        tx = parse_transaction_line(buffer_line)
+        if tx:
+            transactions.append(tx)
+
     return transactions
 
+def parse_transaction_line(line):
+    date_match = re.search(DATE_REGEX_COMBINED, line)
+    if not date_match:
+        return None
+    date = date_match.group().strip()
+
+    # On récupère tous les montants
+    amounts = re.findall(AMOUNT_REGEX, line)
+    montant = None
+
+    if amounts:
+        # Chercher le premier montant après la date → éviter le solde final
+        date_end_index = date_match.end()
+        after_date_text = line[date_end_index:]
+        after_date_amounts = re.findall(AMOUNT_REGEX, after_date_text)
+        
+        if after_date_amounts:
+            montant = after_date_amounts[0]  # Premier montant après la date
+        else:
+            montant = amounts[0]  # fallback si rien trouvé
+
+    # Nettoyage de la description
+    description = line
+    description = re.sub(DATE_REGEX_COMBINED, "", description)
+    if montant:
+        description = description.replace(montant, "")
+    description = re.sub(r"\s+", " ", description).strip()
+
+    # Sens basé sur signes et mots clés
+    sens = None
+    if montant and montant.strip().startswith("-"):
+        sens = "Dr"
+        montant = montant.strip().lstrip("-")  # On enlève le signe du montant
+    elif "credit" in line.lower() or re.search(r"\bcr\b", line.lower()):
+        sens = "Cr"
+    elif "debit" in line.lower() or re.search(r"\bdr\b", line.lower()):
+        sens = "Dr"
+    elif "+" in line:
+        sens = "Cr"
+    elif "-" in line and not sens:
+        sens = "Dr"
+
+    return {
+        "date": date,
+        "description": description,
+        "montant": montant,
+        "sens": sens
+    }
