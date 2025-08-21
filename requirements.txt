@@ -20,7 +20,7 @@ pydantic
 pytesseract
 pillow
 opencv-python-headless
-
+pdf2image
 # NLP / fuzzy matching
 rapidfuzz
 
