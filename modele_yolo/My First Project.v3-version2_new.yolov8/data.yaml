@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 5
+names: ['lignes_transactions', 'nom_banque', 'numero_compte', 'periode', 'titulaire']
+
+roboflow:
+  workspace: larissa-yy3vo
+  project: my-first-project-crnn1
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/larissa-yy3vo/my-first-project-crnn1/dataset/3

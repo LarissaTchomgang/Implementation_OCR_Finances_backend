@@ -9,7 +9,7 @@ import pytesseract
 # ⚙️ CONFIG — mets ici ton chemin vers best.pt si tu veux forcer en dur
 YOLO_WEIGHTS = os.getenv(
     "YOLO_WEIGHTS",
-    r"C:\Users\Moi\Desktop\doc polytech\doc niveau 4 - AIA 4\Stage_Saphir\projet_comptabilité\implémentation_ocr_finance\backend\modele_yolo\runs\detect\train7\weights\best.pt"
+    r"C:\Users\Moi\Desktop\doc polytech\doc niveau 4 - AIA 4\Stage_Saphir\projet_comptabilité\implémentation_ocr_finance\backend\runs\detect\train5\weights\best.pt"
 )
 
 # Noms EXACTS des classes telles que dans ton dataset YOLO
