@@ -1,11 +1,37 @@
+# fastapi
+# uvicorn
+# python-multipart
+# pytesseract
+# Pillow
+# pdf2image
+# openpyxl
+# xlsxwriter
+# pydantic
+# pandas
+# rapidfuzz
+
+# API
 fastapi
 uvicorn
 python-multipart
-pytesseract
-Pillow
-pdf2image
-openpyxl
-xlsxwriter
 pydantic
-pandas
+
+# OCR et traitement image
+pytesseract
+pillow
+opencv-python-headless
+
+# NLP / fuzzy matching
 rapidfuzz
+
+# Excel / données
+pandas
+openpyxl
+
+# YOLO et deep learning
+torch
+torchvision
+ultralytics
+
+# Utils
+numpy
