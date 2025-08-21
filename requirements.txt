@@ -6,4 +6,6 @@ Pillow
 pdf2image
 openpyxl
 xlsxwriter
-
+pydantic
+pandas
+rapidfuzz
