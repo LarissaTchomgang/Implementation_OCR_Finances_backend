@@ -41,7 +41,8 @@ COPY runs/detect/train5/weights/best.pt .
 EXPOSE 8001
 
 # Variable d’environnement pour FastAPI
-ENV PORT=8001
+#ENV PORT=8001
 
 # Lancer le serveur en mode debug (logs plus clairs)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--log-level", "debug"]
+#CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--log-level", "debug"]
+CMD ["python", "app/main.py"]
