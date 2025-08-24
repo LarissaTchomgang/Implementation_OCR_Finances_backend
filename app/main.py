@@ -28,5 +28,5 @@ if __name__ == "__main__":
     import uvicorn
 
     # Render injecte PORT=10000 → on le lit
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=False)
+    #port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=1000, reload=False)
