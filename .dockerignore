@@ -1,0 +1,19 @@
+# Environnements & caches
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# VCS
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+
+# Builds / exports locaux
+exports/
+

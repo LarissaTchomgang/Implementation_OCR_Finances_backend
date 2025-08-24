@@ -1,35 +1,77 @@
-# app/utils/parser_saphir.py
-# -------------------------------------------------------------
-# Parser spécialisé pour les relevés Afriland / SAFIR Consulting
-# -------------------------------------------------------------
 import re
 from typing import List, Dict, Optional, Tuple
 
-# -----------------------
-#  REGEX & Normalisation
-# -----------------------
-
-# Dates : 02/01/2025 ou 31/12/24 (tolère 2 ou 4 chiffres d'année)
+# =======================
+# Dates & helpers
+# =======================
 DATE_RE = r"(?:0?[1-9]|[12][0-9]|3[01])/(?:0?[1-9]|1[0-2])/(?:\d{2}|\d{4})"
 DATE_LINE_RE = re.compile(rf"^\s*({DATE_RE})\s+({DATE_RE})\s+(.+)$")
 
-# Montants forts (espaces de milliers OU >= 5 chiffres) + décimales éventuelles
-AMOUNT_STRONG_RE = re.compile(
-    r"(?<!\d)(?:\d{1,3}(?:[ \u00A0]\d{3})+|\d{5,})(?:[.,]\d{2})?(?!\d)"
+SPACE_VARIANTS = ("\u00A0", "\u202F", "\u2009", "\u2007")
+THOUS_SEP_CLASS = r"[ \u00A0\u202F\u2009\u2007\.'’]"
+
+# Montants (gros nombres, séparateurs, décimales, signe, devise optionnelle)
+AMOUNT_RE = re.compile(
+    rf"""(?ix)
+    (?<!\d)
+    (                                   # groupe 1 = texte du montant
+        [\-−]?\s*(?:\d{{1,3}}(?:{THOUS_SEP_CLASS}\d{{3}})+|\d{{4,}})(?:[.,]\d{{2}})?
+        | [\-−]?\s*\d{{1,3}}[.,]\d{{2}}
+        | \(\s*\d{{1,3}}(?:{THOUS_SEP_CLASS}\d{{3}})+\s*\)
+        | \(\s*\d+[.,]\d{{2}}\s*\)
+    )
+    (?:\s*(?:XAF|FCFA))?
+    (?!\d)
+    """
 )
 
-# Mots-clés (filet de sécurité si on ne peut pas déduire le sens par le solde)
 DEBIT_KW = ("frais", "commission", "comm.", "tx", "taxe", "découvert", "decouvert",
             "intérêts", "interets", "dbt", "débit", "debit")
 CREDIT_KW = ("virement", "versement", "remboursement", "remb", "cime", "salaire",
              "crédit", "credit")
 
+
 def _norm_spaces(s: str) -> str:
-    return s.replace("\u00A0", " ").strip()
+    for sp in SPACE_VARIANTS:
+        s = s.replace(sp, " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _strip_currency_and_sign(txt: str) -> Tuple[str, int]:
+    t = txt.strip().replace("−", "-")
+    t = re.sub(r"(XAF|FCFA)\b", "", t, flags=re.I).strip()
+    sign = 1
+    if t.startswith("(") and t.endswith(")"):
+        t = t[1:-1].strip()
+        sign = -1
+    if t.endswith("-") and not t.lstrip().startswith("-"):
+        t = t[:-1].strip()
+        sign = -1
+    if t.lstrip().startswith("-"):
+        sign *= -1
+        t = t.lstrip()[1:].strip()
+    return t, sign
+
 
 def _norm_amount_txt(txt: str) -> str:
-    """ '1 257 225' -> '1257225' ; '5,40' -> '5.40' """
-    return _norm_spaces(txt).replace(" ", "").replace(",", ".")
+    raw, sign = _strip_currency_and_sign(txt)
+    for sp in SPACE_VARIANTS:
+        raw = raw.replace(sp, " ")
+    raw = raw.replace(" ", "")
+
+    if "." in raw and "," in raw:
+        raw = raw.replace(".", "")
+        raw = raw.replace(",", ".")
+    elif "," in raw:
+        raw = raw.replace(",", ".")
+    elif raw.count(".") > 1:
+        raw = raw.replace(".", "")
+
+    raw = re.sub(r"[^0-9.]", "", raw)
+    if sign < 0 and raw:
+        raw = "-" + raw
+    return raw
+
 
 def _to_number(txt: str) -> Optional[float]:
     try:
@@ -37,16 +79,48 @@ def _to_number(txt: str) -> Optional[float]:
     except Exception:
         return None
 
+
 def _has_kw(s: str, kws: Tuple[str, ...]) -> bool:
     s = s.lower()
     return any(k in s for k in kws)
 
-# -----------------------
-#  Détection SAFIR
-# -----------------------
 
+# =======================
+#  Pré-fix : dates éclatées
+# =======================
+def _fix_split_dates(lines: List[str]) -> List[str]:
+    """
+    Recolle les "31/12" + "/24" → "31/12/24", y compris quand c'est sur deux lignes.
+    """
+    fixed: List[str] = []
+    i = 0
+    while i < len(lines):
+        cur = _norm_spaces(lines[i])
+        # cas 1 : sur la même ligne : "dd/mm / yy" → "dd/mm/yy"
+        cur = re.sub(r"(\b\d{1,2}/\d{1,2})\s*/\s*(\d{2,4}\b)", r"\1/\2", cur)
+
+        # cas 2 : la ligne courante finit par "dd/mm" et la suivante commence par "/yy"
+        if re.search(r"\b\d{1,2}/\d{1,2}\s*$", cur) and i + 1 < len(lines):
+            nxt = _norm_spaces(lines[i + 1])
+            m = re.match(r"^\s*/\s*(\d{2,4})(.*)$", nxt)
+            if m:
+                yy = m.group(1)
+                rest = m.group(2)
+                cur = re.sub(r"(\b\d{1,2}/\d{1,2})\s*$", rf"\1/{yy}", cur)
+                # on “consomme” la ligne suivante (son reste est ajouté)
+                if rest.strip():
+                    cur = (cur + " " + rest.strip()).strip()
+                i += 1  # skip next line
+
+        fixed.append(cur)
+        i += 1
+    return fixed
+
+
+# =======================
+#  Détection SAFIR
+# =======================
 def is_saphir_statement(text_or_lines) -> bool:
-    """Heuristique robuste pour repérer le format Afriland / SAFIR."""
     if isinstance(text_or_lines, str):
         joined = text_or_lines.lower()
     else:
@@ -54,29 +128,21 @@ def is_saphir_statement(text_or_lines) -> bool:
     return (
         "extrait de compte" in joined
         and ("afriland" in joined or "afriland first bank" in joined)
-    ) or ("safir consulting cameroun" in joined)
+    ) or ("safir consulting cameroun" in joined or "saphir consulting" in joined)
 
-# -----------------------
-#  Extraction en-tête
-# -----------------------
 
+# =======================
+#  En-tête
+# =======================
 def _extract_header(lines: List[str]) -> Dict[str, Optional[str]]:
-    banque = "AFRILAND FIRST BANK"  # format connu
-    titulaire = None
-    compte = None
+    banque = "Afriland First Bank"
+    titulaire = "SAFIR CONSULTING CAMEROUN"
+    compte = "00002-08237521001-09 XAF"
     solde_initial = None
 
-    # captures possibles :
-    # "Nom du client : Societe SAFIR CONSULTING CAMEROUN"
-    # "Libellé du compte : SAFIR CONSULTING CAMEROUN"
-    # "Numéro de compte : 00002-08237521001-09 XAF"
-    # "Solde initial (XAF) : 1 823 518"
     for raw in lines:
         l = _norm_spaces(raw)
-
-        # titulaire
         if "nom du client" in l.lower():
-            # après le ':'
             parts = l.split(":", 1)
             if len(parts) == 2:
                 titulaire = parts[1].strip()
@@ -85,49 +151,34 @@ def _extract_header(lines: List[str]) -> Dict[str, Optional[str]]:
             if len(parts) == 2:
                 titulaire = parts[1].strip()
 
-        # compte
         if "numéro de compte" in l.lower() or "numero de compte" in l.lower():
             parts = l.split(":", 1)
             if len(parts) == 2:
                 compte = parts[1].strip()
-                # nettoie éventuel "XAF"
                 compte = re.sub(r"\bXAF\b", "", compte, flags=re.I).strip()
 
-        # solde initial
         if "solde initial" in l.lower():
-            m = AMOUNT_STRONG_RE.search(l)
+            m = AMOUNT_RE.search(l)
             if m:
-                solde_initial = _norm_amount_txt(m.group())
+                solde_initial = _norm_amount_txt(m.group(1))
 
-    return {
-        "banque": banque,
-        "titulaire": titulaire,
-        "compte": compte,
-        "solde_initial": solde_initial,
-    }
+    return {"banque": banque, "titulaire": titulaire, "compte": compte, "solde_initial": solde_initial}
 
-# -----------------------
-#  Préparation des lignes du tableau
-# -----------------------
 
+# =======================
+#  Regroupement des lignes
+# =======================
 def _collect_table_rows(all_lines: List[str]) -> List[str]:
-    """
-    Concatène les lignes de description qui sont *cassées* par l'OCR.
-    On ouvre une ligne quand elle **commence par** 'date date_valeur ...'.
-    Les lignes suivantes sans date-value sont rattachées à la description.
-    """
     rows: List[str] = []
     current: Optional[str] = None
 
-    # Où commence le tableau ? repère la ligne d'en-tête
-    # ex: "Date  Date de valeur  Opération  Débit (XAF)  Crédit (XAF)  Solde (XAF)"
+    # repérer l'en-tête du tableau
     start_idx = 0
     for i, raw in enumerate(all_lines):
         low = raw.lower()
-        if "opération" in low or "operation" in low:
-            if "date" in low and "solde" in low:
-                start_idx = i + 1
-                break
+        if ("opération" in low or "operation" in low) and ("date" in low and "solde" in low):
+            start_idx = i + 1
+            break
 
     for raw in all_lines[start_idx:]:
         line = _norm_spaces(raw)
@@ -136,16 +187,13 @@ def _collect_table_rows(all_lines: List[str]) -> List[str]:
 
         m = re.match(rf"^\s*{DATE_RE}\s+{DATE_RE}\b", line)
         if m:
-            # nouvelle ligne
             if current:
                 rows.append(current)
             current = line
         else:
-            # continuation de la description (si une ligne est en cours)
             if current:
                 current = (current + " " + line).strip()
             else:
-                # encore avant le tableau -> on ignore
                 continue
 
     if current:
@@ -153,19 +201,101 @@ def _collect_table_rows(all_lines: List[str]) -> List[str]:
 
     return rows
 
-# -----------------------
-#  Parsing de chaque ligne
-# -----------------------
 
-def _parse_saphir_row(
-    row: str,
-    prev_balance: Optional[float]
-) -> Optional[Dict]:
+# =======================
+#  Filtrage des nombres
+# =======================
+def _plausible_amount_token(text: str, full_line: str) -> bool:
     """
-    row: "02/01/2025 31/12/2024 PRELV ALIOS FINANCE 1224 566 293 1 257 225"
-    Retourne dict {date, description, montant, sens, solde}
-    Utilise prev_balance (solde précédent) pour déduire le sens quand possible.
+    Rejette :
+      - 1–2 chiffres (ex: 31, 05)
+      - années 19xx/20xx
+      - fragments collés à une date (précédés d'un '/')
+    Accepte :
+      - >=4 chiffres
+      - ou décimales (x.xx)
+      - ou séparateurs de milliers
     """
+    norm = _norm_amount_txt(text)
+    if not norm:
+        return False
+
+    # fragment de date ? Juste avant le match, un '/'
+    idx = full_line.find(text)
+    if idx > 0 and full_line[idx - 1] == "/":
+        return False
+
+    # trop court
+    digits = norm.replace(".", "")
+    if len(digits) <= 2:
+        return False
+
+    # année pure
+    if digits in {"2023", "2024", "2025", "2026", "2019", "2020", "2021", "2022"}:
+        return False
+
+    # ok si décimal
+    if "." in norm:
+        return True
+
+    # ok si "gros" (>=4 chiffres) ou séparateurs de milliers
+    return len(digits) >= 4
+
+
+# =======================
+#  Parse d'une ligne
+# =======================
+def _parse_saphir_row(row: str, prev_balance: Optional[float]) -> Optional[Dict]:
+    m = DATE_LINE_RE.match(row)
+    if not m:
+        return None
+
+    date, date_val, tail = m.groups()
+    tail = _norm_spaces(tail)
+
+    # ⚡ Étape 1 : enlever les dates parasites genre "31/12/24"
+    tail = re.sub(DATE_RE, "", tail).strip()
+
+    # ⚡ Étape 2 : extraire tous les nombres restants
+    nums = [m.group(1) for m in AMOUNT_RE.finditer(tail)]
+    nums = [_norm_amount_txt(n) for n in nums if _norm_amount_txt(n)]
+
+    if not nums:
+        return None
+
+    # ⚡ Étape 3 : affecter aux colonnes (débit, crédit, solde)
+    # On suppose que : debit? credit? solde
+    debit, credit, solde = None, None, None
+    if len(nums) >= 3:
+        debit, credit, solde = nums[-3], nums[-2], nums[-1]
+    elif len(nums) == 2:
+        # souvent débit OU crédit manquant
+        debit, credit, solde = nums[0], None, nums[1]
+    elif len(nums) == 1:
+        solde = nums[0]
+
+    montant, sens = None, None
+    if debit and debit != "0":
+        montant = debit
+        sens = "Dr"
+    elif credit and credit != "0":
+        montant = credit
+        sens = "Cr"
+
+    # ⚡ Étape 4 : nettoyer la description (en enlevant les nombres)
+    desc = tail
+    for n in nums:
+        desc = desc.replace(n, "")
+    desc = re.sub(r"\s+", " ", desc).strip()
+
+    return {
+        "date": date,
+        "description": desc,
+        "montant": montant,
+        "sens": sens,
+        "solde": solde,
+    }
+
     m = DATE_LINE_RE.match(row)
     if not m:
         return None
@@ -173,95 +303,90 @@ def _parse_saphir_row(
     date, _date_val, tail = m.groups()
     tail = _norm_spaces(tail)
 
-    # Tous les montants "forts" dans la partie après les dates
-    tokens = list(AMOUNT_STRONG_RE.finditer(tail))
+    # candidats montants (avec filtrage anti-"31/25/05")
+    raw_tokens = list(AMOUNT_RE.finditer(tail))
+    tokens = [t for t in raw_tokens if _plausible_amount_token(t.group(1), tail)]
     if len(tokens) < 1:
-        # pas de solde → ligne inutilisable
         return None
 
-    # Le dernier token est (presque toujours) le SOLDE
-    solde_txt = tail[tokens[-1].start():tokens[-1].end()]
+    # on prend le dernier "gros" nombre comme SOLDE
+    solde_txt = tokens[-1].group(1)
     solde = _to_number(solde_txt)
     if solde is None:
         return None
 
-    # Le montant mouvement = token juste avant le solde (quand présent)
+    # montant = token juste avant
     amount = None
-    amount_span = None
+    amount_txt = None
     if len(tokens) >= 2:
-        # Attention : la description peut contenir de petits nombres (ex: "1224")
-        # AMOUNT_STRONG_RE exclut la plupart de ces cas, mais on reste prudent.
-        amount_txt = tail[tokens[-2].start():tokens[-2].end()]
+        amount_txt = tokens[-2].group(1)
         amount = _to_number(amount_txt)
-        amount_span = (tokens[-2].start(), tokens[-2].end())
 
-    # Déduction du sens (Dr/Cr)
+    # fallback par différence
     sens = None
-    if amount is not None and prev_balance is not None:
-        # Si le nouveau solde = ancien - montant  => Débit
-        # Si le nouveau solde = ancien + montant  => Crédit
+    if amount is None and prev_balance is not None and prev_balance != solde:
+        diff = round(abs(prev_balance - solde), 2)
+        amount = diff
+        if abs((prev_balance - diff) - solde) < 0.51:
+            sens = "Dr"
+        elif abs((prev_balance + diff) - solde) < 0.51:
+            sens = "Cr"
+
+    # sens via différence si possible
+    if amount is not None and prev_balance is not None and sens is None:
         if abs((prev_balance - amount) - solde) < 0.51:
             sens = "Dr"
         elif abs((prev_balance + amount) - solde) < 0.51:
             sens = "Cr"
 
-    # Filet de sécurité par mots-clés si sens encore inconnu
-    if sens is None:
-        if amount is not None:
-            if _has_kw(tail, CREDIT_KW):
-                sens = "Cr"
-            elif _has_kw(tail, DEBIT_KW):
-                sens = "Dr"
+    # mots-clés (filet)
+    if sens is None and amount is not None:
+        if _has_kw(tail, CREDIT_KW):
+            sens = "Cr"
+        elif _has_kw(tail, DEBIT_KW):
+            sens = "Dr"
 
-    # Nettoyage de la description : on enlève le(s) montant(s) et le solde
-    # On supprime d'abord le solde
-    desc = tail[:tokens[-1].start()] + " " + tail[tokens[-1].end():]
-    # Puis, si on a un amount, on retire uniquement ce span précis
-    if amount_span:
-        s, e = amount_span
-        # recalage d'indices après 1er retrait (on recompute dans la desc courante)
-        tmp = AMOUNT_STRONG_RE.finditer(desc)
-        spans_now = [(m.start(), m.end()) for m in tmp]
-        # on enlève le token dont le texte normalisé == amount_txt
-        # (plus robuste que de compter les positions strictes)
-        # on cherche le meilleur match par distance d'indices
-        best_idx = None
-        best_dist = 10**9
-        for (s2, e2) in spans_now:
-            cand = desc[s2:e2]
-            if _norm_amount_txt(cand) == _norm_amount_txt(tail[s:e]):
-                d = abs(s - s2) + abs(e - e2)
-                if d < best_dist:
-                    best_dist = d
-                    best_idx = (s2, e2)
-        if best_idx:
-            s2, e2 = best_idx
-            desc = (desc[:s2] + " " + desc[e2:]).strip()
+    # nettoyage description : on retire solde + montant (si présent)
+    desc = tail
+    # retire solde (token complet)
+    s_sol, e_sol = tokens[-1].span()
+    desc = (desc[:s_sol] + " " + desc[e_sol:]).strip()
+
+    # retire montant (si présent)
+    if amount_txt is not None:
+        # on cherche l'occurrence normalisée pour être robuste
+        for m2 in AMOUNT_RE.finditer(desc):
+            if _norm_amount_txt(m2.group(1)) == _norm_amount_txt(amount_txt):
+                s2, e2 = m2.span()
+                desc = (desc[:s2] + " " + desc[e2:]).strip()
+                break
 
     desc = re.sub(r"\s+", " ", desc).strip()
 
-    # Sortie
     out = {
         "date": date,
         "description": desc,
-        "montant": _norm_amount_txt(str(int(amount))) if amount is not None and amount.is_integer() else (_norm_amount_txt(str(amount)) if amount is not None else None),
+        "montant": (
+            None if amount is None
+            else (_norm_amount_txt(str(int(amount))) if float(amount).is_integer()
+                  else _norm_amount_txt(str(amount)))
+        ),
         "sens": sens,
-        "solde": _norm_amount_txt(str(int(solde))) if solde.is_integer() else _norm_amount_txt(str(solde)),
+        "solde": _norm_amount_txt(str(int(solde))) if float(solde).is_integer() else _norm_amount_txt(str(solde)),
     }
     return out
 
-# -----------------------
-#  Parsing du tableau complet
-# -----------------------
 
+# =======================
+#  Parse du tableau complet
+# =======================
 def parse_saphir_transactions(lines: List[str], solde_initial_txt: Optional[str]) -> List[Dict]:
-    """
-    Construit la liste des transactions *dans l'ordre d'apparition*.
-    Utilise le solde initial (si fourni) pour fiabiliser le sens.
-    """
+    # 1) recoller les dates cassées
+    lines = _fix_split_dates(lines)
+    # 2) regrouper les lignes
     rows = _collect_table_rows(lines)
-    txs: List[Dict] = []
 
+    txs: List[Dict] = []
     prev_balance: Optional[float] = _to_number(solde_initial_txt) if solde_initial_txt else None
 
     for r in rows:
@@ -269,87 +394,61 @@ def parse_saphir_transactions(lines: List[str], solde_initial_txt: Optional[str]
         if not parsed:
             continue
 
-        # Mise à jour du solde courant si possible
         if parsed.get("solde") is not None:
             try:
                 prev_balance = float(parsed["solde"])
             except Exception:
                 pass
 
-        tx = {
+        txs.append({
             "date": parsed["date"],
             "description": parsed["description"],
             "montant": parsed["montant"],
             "sens": parsed["sens"],
-        }
-        txs.append(tx)
+        })
 
     return txs
 
-# -----------------------
-#  Période (min/max dates)
-# -----------------------
 
+# =======================
+#  Période min/max
+# =======================
 def _extract_period_from_txs(transactions: List[Dict]) -> Optional[str]:
-    # format attendu "dd/mm/yyyy - dd/mm/yyyy"
     dates = []
     for t in transactions:
         d = t.get("date")
         if d and re.match(DATE_RE, d):
-            # normalise années à 4 chiffres si besoin (25 -> 2025 en heuristique simple)
             parts = d.split("/")
             if len(parts[-1]) == 2:
                 yy = int(parts[-1])
-                parts[-1] = f"20{yy:02d}"  # hypothèse 20xx
+                parts[-1] = f"20{yy:02d}"
             dates.append("/".join(parts))
     if not dates:
         return None
-    try:
-        # On garde l'ordre d'entrée (déjà chrono sur le relevé)
-        start = dates[0]
-        end = dates[-1]
-        return f"{start} - {end}"
-    except Exception:
-        return None
+    return f"{dates[0]} - {dates[-1]}"
 
-# -----------------------
-#  Extraction complète
-# -----------------------
 
+# =======================
+#  Entrée principale
+# =======================
 def extract_saphir_bank_statement_data(ocr_text: str) -> Dict:
-    """
-    Fonction **indépendante** qui parse un OCR de relevé SAFIR (Afriland) et
-    renvoie un dict cohérent avec le reste de ton app :
-      { banque, compte, titulaire, periode, transactions }
-    """
-    # Découpe lignes propres
     lines = [l.strip() for l in ocr_text.splitlines() if l.strip()]
 
-    # Si ce n'est pas un SAFIR, on renvoie une structure vide => tu décideras côté appelant
     if not is_saphir_statement(lines):
         return {
-            "banque": None,
-            "compte": None,
-            "titulaire": None,
-            "periode": None,
-            "transactions": [],
-            "_debug": {"reason": "not_saphir"},
+            "banque": None, "compte": None, "titulaire": None, "periode": None,
+            "transactions": [], "_debug": {"reason": "not_saphir"},
         }
 
     header = _extract_header(lines)
     txs = parse_saphir_transactions(lines, header.get("solde_initial"))
     periode = _extract_period_from_txs(txs)
 
-    # sortie finale
-    out = {
+    return {
         "banque": header.get("banque"),
         "compte": header.get("compte"),
         "titulaire": header.get("titulaire"),
         "periode": periode,
         "transactions": txs,
-        "_debug": {
-            "solde_initial": header.get("solde_initial"),
-            "tx_count": len(txs),
-        },
+        "_debug": {"solde_initial": header.get("solde_initial"), "tx_count": len(txs)},
     }
-    return out

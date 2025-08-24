@@ -9,7 +9,7 @@ app = FastAPI()
 # --- Configuration CORS ---
 origins = [
     "http://localhost:3000",  # pour les tests en local
-    "https://implementation-ocr-finances-frontend-1h038er53.vercel.app",  # ton site Vercel
+    "https://implementation-ocr-finances-fronten.vercel.app",  # ton site Vercel
 ]
 
 app.add_middleware(

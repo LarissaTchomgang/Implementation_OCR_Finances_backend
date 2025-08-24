@@ -2,11 +2,14 @@ from fastapi import APIRouter, UploadFile, File, Body
 from fastapi.responses import JSONResponse, FileResponse
 import os
 import shutil
+import time
+import traceback
 from pdf2image import convert_from_path
 
 from app.utils.parser import extract_bank_statement_data, detect_transactions
 from app.utils.yolo_service import extract_with_yolo_and_rules
 from app.utils.parser_saphir import extract_saphir_bank_statement_data  # ✅ parse du texte OCR
+from app.utils.excel_service import save_to_excel  # ✅ export excel
 
 import pytesseract
 from PIL import Image
@@ -18,14 +21,20 @@ router = APIRouter()
 # -----------------------
 def ocr_to_text(filepath: str) -> str:
     """
-    Convertit un fichier (pdf/image) en texte OCR brut (français).
+    Convertit un fichier (pdf/image) en texte OCR brut (français),
+    en limitant les césures/lignes cassées.
     """
+    config = "--oem 3 --psm 6"  # bloc de texte uniforme
     if filepath.lower().endswith(".pdf"):
-        pages = convert_from_path(filepath, dpi=200)
-        text = "\n".join(pytesseract.image_to_string(p, lang="fra") for p in pages)
+        pages = convert_from_path(filepath, dpi=300)  # 300dpi : moins de “/ 24” cassés
+        text = "\n".join(pytesseract.image_to_string(p, lang="fra", config=config) for p in pages)
     else:
-        text = pytesseract.image_to_string(Image.open(filepath), lang="fra")
+        text = pytesseract.image_to_string(Image.open(filepath), lang="fra", config=config)
+
+    # Normalisation douce pour éviter les séparations bizarres
+    text = text.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2009", " ")
     return text
+
 
 # -----------------------
 # Détection fichier SAFIR
@@ -41,8 +50,9 @@ def is_saphir_file(filepath: str) -> bool:
     except Exception:
         return False
 
+
 # -----------------------
-# Route principale
+# Route principale : Extraction
 # -----------------------
 @router.post("/extract")
 async def extract_fields(file: UploadFile = File(...)):
@@ -108,20 +118,32 @@ async def extract_fields(file: UploadFile = File(...)):
                 except:
                     pass
 
+
+# -----------------------
+# Export Excel (Téléchargement direct)
+# -----------------------
 @router.post("/export-excel-from-json")
 async def export_excel_from_json(data: dict = Body(...)):
     try:
-        from app.utils.excel_service import save_to_excel
-
         os.makedirs("exports", exist_ok=True)
-        out_name = data.get("filename", "releve.xlsx")
-        if not out_name.endswith(".xlsx"):
-            out_name += ".xlsx"
-        out_path = os.path.join("exports", out_name)
 
+        # Nom de base + timestamp pour éviter l'écrasement
+        base_name = data.get("filename", "releve")
+        if base_name.endswith(".xlsx"):
+            base_name = base_name[:-5]
+        timestamp = int(time.time())  # ex: 1692627890
+        out_name = f"{base_name}_{timestamp}.xlsx"
+
+        out_path = os.path.join("exports", out_name)
         save_to_excel(data, out_path)
 
-        return {"message": "Excel généré avec succès", "excel_file": out_path}
+        # ✅ Retour direct en téléchargement
+        return FileResponse(
+            path=out_path,
+            filename=out_name,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     except Exception as e:
+        print("ERREUR EXPORT EXCEL:", traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})

@@ -5,7 +5,7 @@
 # Pillow
 # pdf2image
 # openpyxl
-# xlsxwriter
+xlsxwriter
 # pydantic
 # pandas
 # rapidfuzz
@@ -35,3 +35,6 @@ ultralytics
 
 # Utils
 numpy
+
+starlette
+anyio
